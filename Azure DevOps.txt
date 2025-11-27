@@ -1,0 +1,2185 @@
+
+✅ Basic Azure DevOps YAML Pipeline Syntax
+   ----------------------------------------
+
+trigger:       # Defines branch(es) that trigger the pipeline.
+  - main       # Trigger pipeline on commits to the 'main' branch
+
+pool:                             # Pool : Specifies the agent pool (e.g., ubuntu-latest, windows-latest).
+  vmImage: 'ubuntu-latest'        # Use Microsoft-hosted Ubuntu agent
+
+variables:                        # Variables : Define reusable values.
+  buildConfiguration: 'Release'
+
+stages:                           # Stages : Break pipeline into logical stages (e.g., Build, Test, Deploy).
+  - stage: Build
+    displayName: 'Build Stage'
+    jobs:                               # Jobs : Group of steps that run on an agent.
+      - job: BuildJob
+        displayName: 'Build Job'
+        steps:                          # steps : Individual tasks or scripts (e.g., build, test, deploy).
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: 'build'
+              projects: '**/*.csproj'
+
+  - stage: Test
+    displayName: 'Test Stage'
+    dependsOn: Build
+    jobs:
+      - job: TestJob
+        displayName: 'Run Unit Tests'
+        steps:
+          - task: DotNetCoreCLI@2            # task : Built-in or marketplace task (like DotNetCoreCLI).
+            inputs:
+              command: 'test'
+              projects: '**/*Tests.csproj'
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+🔹 What Are Variable Groups in Azure DevOps?
+   ------------------------------------------
+
+Variable Groups in Azure DevOps are collections of variables that can be shared across multiple pipelines, making it easier to manage and reuse environment-specific or common values like connection strings, secrets, API keys, etc.
+
+
+🔧 Example: Define Variable Group
+   -------------------------------
+
+Suppose you create a variable group named MyAppSettings with:
+
+ENV: dev
+APP_NAME: my-awesome-app
+API_KEY: <marked as secret>
+
+
+A Variable Group in Azure DevOps:
+
+-- Is created under Pipelines → Library → Variable Groups
+
+-- Can contain variables like "dbConnectionString", "resourceGroup", etc.
+
+-- Can be linked to multiple pipelines
+
+-- Can reference Azure Key Vault secrets for secure values
+
+
+
+📄 Usage in YAML Pipeline
+   -----------------------
+
+🅰 Link the group in YAML
+  -----------------------
+
+variables:
+- group: MyAppSettings
+
+
+🅱 Use the variables
+  ------------------
+
+steps:
+- script: echo "Environment is $(ENV)"
+- script: echo "App Name is $(APP_NAME)"
+
+
+Example YAML pipeline
+---------------------
+
+
+trigger:
+  branches:
+    include:
+      - main
+
+# 🔹 Link the variable group
+
+variables:
+- group: MyApp-Variables
+
+
+stages:
+- stage: Deploy
+  displayName: "Deploy to AKS"
+  jobs:
+  - job: DeployJob
+    displayName: "Kubernetes Deployment"
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+
+    - task: AzureCLI@2
+      displayName: "Get AKS Credentials"
+      inputs:
+        azureSubscription: "my-azure-service-connection"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Using variables from variable group..."
+          echo "Resource Group: $(resourceGroup)"
+          echo "AKS Cluster: $(aksCluster)"
+          az aks get-credentials --resource-group $(resourceGroup) --name $(aksCluster)
+
+
+    - task: Kubernetes@1
+      displayName: "Deploy app to AKS"
+      inputs:
+        connectionType: None             #[ connectionType: None  This tells Azure DevOps that no predefined Kubernetes service connection is being used. Instead, the pipeline assumes the                       
+        command: apply                          kubectl context is already configured — typically from a previous step like above task. OR connectionType: Azure Resource Manager -- If you 
+        useConfigurationFile: true                                                                                             wanted Azure DevOps to manage the connection automatically ]
+        configuration: "manifests/deployment.yaml"
+
+
+
+
+
+🔐 Linking Azure Key Vault to a Variable Group
+   --------------------------------------------
+
+-- Go to Pipelines → Library → Variable Groups
+
+-- Click + Variable group
+
+-- Name it (e.g., Secrets-Prod)
+
+-- Enable "Link secrets from an Azure Key Vault as variables"
+
+-- Select your Azure subscription and Key Vault
+
+-- Choose which secrets to import
+
+
+
+Question : Would you like me to show how to define separate variable groups per environment (like Dev, Test, Prod) and use them dynamically in the same pipeline?
+
+Answer : 
+
+✅ YAML Pipeline with Environment-Based Variable Groups
+--------------------------------------------------------
+
+
+# File: azure-pipelines.yml
+---------------------------
+
+
+trigger: none   # Manual trigger (user selects environment)
+
+parameters:
+  - name: environment
+    displayName: "Select target environment"
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - test
+      - prod
+
+
+# 🔹 Define variable groups conditionally based on user input
+
+variables:
+- name: commonAcr
+  value: "myacr123.azurecr.io"
+
+
+- ${{ if eq(parameters.environment, 'dev') }}:
+  - group: MyApp-Dev
+
+
+- ${{ if eq(parameters.environment, 'test') }}:
+  - group: MyApp-Test
+
+
+- ${{ if eq(parameters.environment, 'prod') }}:
+  - group: MyApp-Prod
+
+
+stages:
+- stage: Deploy
+  displayName: "Deploy to ${{ parameters.environment }} AKS"
+  jobs:
+  - job: DeployJob
+    displayName: "Kubernetes Deploy (${{ parameters.environment }})"
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+
+    - script: |
+        echo "Deploying to ${{ parameters.environment }} environment..."
+        echo "Resource Group: $(resourceGroup)"
+        echo "AKS Cluster: $(aksCluster)"
+        echo "ACR: $(commonAcr)"
+      displayName: "Print environment variables"
+
+
+    - task: AzureCLI@2
+      displayName: "Connect to AKS"
+      inputs:
+        azureSubscription: "my-azure-service-connection"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az aks get-credentials --resource-group $(resourceGroup) --name $(aksCluster) --overwrite-existing   #[ The flag "--overwrite-existing" tells Azure CLI to replace any existing                               
+                                                                                                                  cluster credentials in your local "~/.kube/config" file (or the current 
+                                                                                                                  context) with the new one you’re fetching ]                      
+    - task: Kubernetes@1
+      displayName: "Deploy App to AKS"
+      inputs:
+        connectionType: None
+        command: apply
+        useConfigurationFile: true
+        configuration: "manifests/deployment.yaml"
+
+    - script: |
+        echo "✅ Successfully deployed to ${{ parameters.environment }} environment."
+      displayName: "Deployment summary"
+
+
+📂 Example Variable Group Setup
+--------------------------------
+
+🔸 Variable Group: MyApp-Dev
+-----------------------------
+
+resourceGroup = my-rg-dev
+aksCluster = aks-dev
+namespace = dev
+
+
+
+🔸 Variable Group: MyApp-Test
+------------------------------
+
+resourceGroup = my-rg-test
+aksCluster = aks-test
+namespace = test
+
+
+
+🔸 Variable Group: MyApp-Prod
+------------------------------
+
+resourceGroup = my-rg-prod
+aksCluster = aks-prod
+namespace = prod
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Question : Would you like me to extend this pipeline further to automatically promote from Dev → Test → Prod with manual approval gates between each stage (multi-stage deployment)?
+
+Answer : Perfect 🔥 — let’s now build a real-world, multi-stage Azure DevOps pipeline that:
+
+✅ Deploys automatically across Dev → Test → Prod
+✅ Uses variable groups per environment
+✅ Supports manual approval before deploying to the next stage (through Azure DevOps Environments)
+
+
+🚀 Final YAML — Multi-Stage AKS Deployment with Promotion Flow
+---------------------------------------------------------------
+
+
+# File: azure-pipelines.yml
+
+
+trigger:
+  branches:
+    include:
+      - main   # Run automatically on main branch updates
+
+
+# =====================================================
+# 👇 GLOBAL VARIABLES
+# =====================================================
+
+
+variables:
+  commonAcr: "myacr123.azurecr.io"
+  azureServiceConnection: "my-azure-service-connection"
+  helmChartPath: "helm/myapp"
+
+
+# =====================================================
+# 👇 STAGES
+# =====================================================
+
+
+# -------------------- BUILD --------------------
+
+- stage: Build
+  displayName: "Build and Push Docker Image"
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    - task: Docker@2
+      displayName: "Build & Push Docker Image"
+      inputs:
+        command: buildAndPush
+        containerRegistry: $(azureServiceConnection)
+        repository: myapp
+        dockerfile: Dockerfile
+        tags: |
+          $(Build.BuildId)
+          latest
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish Helm Chart"
+      inputs:
+        pathToPublish: $(helmChartPath)
+        artifactName: drop
+
+
+# -------------------- DEPLOY TO DEV --------------------
+
+- stage: Dev
+  displayName: "Deploy to Dev AKS"
+  dependsOn: Build
+  variables:
+  - group: MyApp-Dev   # Load Dev variable group
+  jobs:
+  - deployment: DeployDev
+    displayName: "Deploy to Dev"
+    environment: dev    # Azure DevOps Environment (add no approvals here)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureCLI@2
+            displayName: "Get Dev AKS Credentials"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroup) \
+                  --name $(aksCluster) \
+                  --overwrite-existing
+
+          - task: HelmDeploy@0
+            displayName: "Helm Deploy to Dev"
+            inputs:
+              connectionType: None
+              command: upgrade
+              chartType: FilePath
+              chartPath: "$(Pipeline.Workspace)/drop"
+              releaseName: "myapp-dev"
+              namespace: $(namespace)
+              install: true
+              arguments: >
+                --set image.repository=$(commonAcr)/myapp
+                --set image.tag=$(Build.BuildId)
+                --set env=dev
+
+
+# -------------------- DEPLOY TO TEST --------------------
+
+- stage: Test
+  displayName: "Deploy to Test AKS"
+  dependsOn: Dev
+  condition: succeeded()
+  variables:
+  - group: MyApp-Test   # Load Test variable group
+  jobs:
+  - deployment: DeployTest
+    displayName: "Deploy to Test"
+    environment: test   # 👈 Add approval gate in DevOps Environment settings
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureCLI@2
+            displayName: "Get Test AKS Credentials"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroup) \
+                  --name $(aksCluster) \
+                  --overwrite-existing
+
+          - task: HelmDeploy@0
+            displayName: "Helm Deploy to Test"
+            inputs:
+              connectionType: None
+              command: upgrade
+              chartType: FilePath
+              chartPath: "$(Pipeline.Workspace)/drop"
+              releaseName: "myapp-test"
+              namespace: $(namespace)
+              install: true
+              arguments: >
+                --set image.repository=$(commonAcr)/myapp
+                --set image.tag=$(Build.BuildId)
+                --set env=test
+
+
+# -------------------- DEPLOY TO PROD --------------------
+
+
+- stage: Prod
+  displayName: "Deploy to Prod AKS"
+  dependsOn: Test
+  condition: succeeded()
+  variables:
+  - group: MyApp-Prod   # Load Prod variable group
+  jobs:
+  - deployment: DeployProd
+    displayName: "Deploy to Prod"
+    environment: prod   # 👈 Add manual approval gate here
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureCLI@2
+            displayName: "Get Prod AKS Credentials"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroup) \
+                  --name $(aksCluster) \
+                  --overwrite-existing
+
+          - task: HelmDeploy@0
+            displayName: "Helm Deploy to Prod"
+            inputs:
+              connectionType: None
+              command: upgrade
+              chartType: FilePath
+              chartPath: "$(Pipeline.Workspace)/drop"
+              releaseName: "myapp-prod"
+              namespace: $(namespace)
+              install: true
+              arguments: >
+                --set image.repository=$(commonAcr)/myapp
+                --set image.tag=$(Build.BuildId)
+                --set env=prod
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+✅ Kubernetes Deployment with Azure DevOps YAML
+   ---------------------------------------------
+
+
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  kubernetesNamespace: 'default'
+  kubernetesCluster: '<your-aks-cluster-name>'
+  containerRegistry: '<your-acr-name>.azurecr.io'
+  imageName: 'myapp'
+  imageTag: '$(Build.BuildId)'
+
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildAndPush
+        steps:
+          - task: Docker@2
+            displayName: 'Build and Push Image'
+            inputs:
+              containerRegistry: '$(containerRegistry)'
+              repository: '$(imageName)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(imageTag)
+
+  - stage: Deploy
+    dependsOn: Build
+    jobs:
+      - job: DeployToK8s
+        steps:
+          - task: Kubernetes@1
+            displayName: 'Deploy to AKS'
+            inputs:
+              connectionType: 'Azure Resource Manager'
+              azureSubscription: '<your-service-connection-name>'
+              azureResourceGroup: '<your-resource-group>'
+              kubernetesCluster: '$(kubernetesCluster)'
+              namespace: '$(kubernetesNamespace)'
+              command: apply
+              useConfigurationFile: true
+              configuration: 'manifests/deployment.yaml'
+              secretType: 'None'
+
+🔑 Prerequisites
+   --------------
+
+a) Azure Resource Manager service connection set up in Azure DevOps.
+
+b) Kubernetes cluster (like AKS) already created.
+
+c) deployment.yaml stored in your repo (manifests/ folder in the example).
+
+d) ACR (Azure Container Registry) configured and accessible by the AKS cluster.
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+✅ Full Azure DevOps YAML with Helm, Secrets & Rolling Updates
+   ------------------------------------------------------------
+
+
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  azureSubscription: '<your-azure-rm-connection-name>'
+  azureResourceGroup: '<your-resource-group>'
+  aksCluster: '<your-aks-cluster-name>'
+  containerRegistry: '<your-acr-name>.azurecr.io'
+  imageName: 'myapp'
+  imageTag: '$(Build.BuildId)'
+  helmReleaseName: 'myapp-release'
+  helmChartPath: './charts/myapp'
+  kubernetesNamespace: 'default'
+  keyVaultName: '<your-keyvault-name>'
+
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildAndPush
+        steps:
+          - task: Docker@2
+            displayName: 'Build and Push Image'
+            inputs:
+              containerRegistry: '$(containerRegistry)'
+              repository: '$(imageName)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(imageTag)
+
+  - stage: Deploy
+    dependsOn: Build
+    jobs:
+      - job: HelmDeploy
+        steps:
+          - task: AzureKeyVault@2
+            name: FetchSecrets
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              KeyVaultName: '$(keyVaultName)'
+              SecretsFilter: '*'
+              RunAsPreJob: true
+
+          - task: HelmInstaller@1
+            displayName: 'Install Helm'
+            inputs:
+              helmVersionToInstall: 'latest'
+
+          - task: AzureCLI@2
+            displayName: 'Set AKS Context'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials --resource-group $(azureResourceGroup) --name $(aksCluster)
+
+          - task: HelmDeploy@0
+            displayName: 'Helm Upgrade or Install'
+            inputs:
+              connectionType: 'None'
+              namespace: '$(kubernetesNamespace)'
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(helmChartPath)'
+              releaseName: '$(helmReleaseName)'
+              overrideValues: |
+                image.repository=$(containerRegistry)/$(imageName)
+                image.tag=$(imageTag)
+                secret.envSecret1=$(ENV_SECRET_1)
+              install: true
+
+
+⚙️ What overrideValues Does
+----------------------------
+
+The overrideValues block in HelmDeploy allows you to override values from the Helm chart’s values.yaml file at deploy time — without modifying the actual file.
+
+It’s equivalent to passing multiple --set flags in the CLI, like:
+
+helm upgrade --install myapp ./chart \
+  --set image.repository=myacr.azurecr.io/myapp \
+  --set image.tag=12345 \
+  --set secret.envSecret1=abcd1234
+
+
+
+
+
+🛠 Sample Helm values.yaml
+   ------------------------
+
+image:
+  repository: myacr.azurecr.io/myapp
+  tag: latest
+
+deployment:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+env:
+  secret:
+    envSecret1: ""
+
+
+
+🔐 Kubernetes Deployment Rolling Update Strategy
+   ----------------------------------------------
+Your Helm chart should generate a Kubernetes Deployment like:
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+This ensures zero-downtime rolling deployments.
+
+
+✅ Requirements
+   -------------
+
+a) AKS cluster and ACR set up
+
+b) Helm chart (charts/myapp/) ready
+
+c) Azure Key Vault with secrets
+
+d) Azure service connection in DevOps
+
+e) Secrets like ENV_SECRET_1 in Key Vault
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Question : write an Azure devops pipeline with kubernetes deployment across three environments (dev, test, prod)
+
+Answer : Excellent 👍 — this is a real-world Azure DevOps multi-environment Kubernetes deployment pipeline question — a common advanced interview and project scenario.
+
+
+Let’s design a single YAML pipeline that:
+
+
+-- Builds and pushes a Docker image
+
+-- Deploys that image to three AKS environments → dev, test, and prod
+
+-- Uses approvals and environment promotion
+
+
+
+🧩 Complete Azure DevOps Pipeline — Build + Multi-Environment Deploy
+=====================================================================
+
+
+# File: azure-pipelines.yml
+
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  imageName: "myapp"
+  acrName: "myacr123"
+  imageTag: "$(Build.BuildId)"
+  kubernetesNamespace: "default"
+  containerRegistry: "$(acrName).azurecr.io"
+  azureServiceConnection: "my-azure-service-connection"   # name of the service connection
+  resourceGroup: "my-rg"
+
+stages:
+# =========================================================
+# 1️⃣ BUILD & PUSH DOCKER IMAGE
+# =========================================================
+- stage: Build
+  displayName: "Build and Push Docker Image"
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: "ubuntu-latest"
+    steps:
+    - checkout: self
+
+    - task: Docker@2
+      displayName: "Build and Push image to ACR"
+      inputs:
+        command: buildAndPush
+        repository: $(imageName)
+        dockerfile: Dockerfile
+        containerRegistry: $(azureServiceConnection)
+        tags: |
+          latest
+          $(imageTag)
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish manifests"
+      inputs:
+        pathToPublish: manifests
+        artifactName: drop
+
+
+-------------------------------------------------------------------
+- task: PublishBuildArtifacts@1
+      displayName: "Publish manifests"
+      inputs:
+        pathToPublish: manifests
+        artifactName: drop
+
+⚙️ Purpose
+
+-- This step publishes build artifacts (in this case, your Kubernetes manifests or Helm chart files) that were generated or prepared during the CI pipeline run.
+
+-- Once published, these artifacts are:
+
+   -- Uploaded and stored in Azure DevOps under the “Artifacts” section of the pipeline run
+
+   -- Available for later stages, such as deployment (CD pipeline)
+
+   -- Versioned automatically along with the build
+
+-------------------------------------------------------------------
+
+
+
+# =========================================================
+# 2️⃣ DEPLOY TO DEV
+# =========================================================
+- stage: Deploy_Dev
+  displayName: "Deploy to AKS - DEV"
+  dependsOn: Build
+  jobs:
+  - deployment: DevDeploy              # [ This defines a deployment job (a special job type meant for deploying apps). The job name here is "DevDeploy" ]
+    displayName: "Deploy to Dev AKS"
+    environment: "aks-dev"             # [ This maps the job to a specific Azure DevOps environment (named aks-dev). It allows tracking deployments, approvals, and environment health 
+                                           directly from the DevOps UI ]
+    strategy:                          # [ strategy : Defines how the deployment will be carried out (e.g., runOnce, rolling, canary). ]
+      runOnce:                         # [ runOnce : Means the deployment will execute once per pipeline run — a simple, single-pass deployment. ]
+        deploy:                        # [ deploy : Under runOnce, this section defines the actual deployment steps ]
+          steps:                       # [ Lists the sequence of commands or tasks executed for deployment ]
+          - download: current          # [ Downloads the artifacts (e.g., build outputs, manifests, Helm charts) produced in the earlier Build stage. The keyword current refers to the 
+                                           current pipeline run ]
+            artifact: drop             # [ Specifies which artifact to download — in this case, the artifact named "drop" (published during the Build stage using PublishBuildArtifacts@1) ]
+
+
+          - task: AzureCLI@2
+            displayName: "Login to Azure and set AKS context (DEV)"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials --resource-group $(resourceGroup)-dev --name aks-dev --overwrite-existing
+
+          - task: Kubernetes@1
+            displayName: "Deploy manifests to DEV"
+            inputs:
+              connectionType: None
+              command: apply
+              useConfigurationFile: true
+              configuration: "$(Pipeline.Workspace)/drop/deployment.yaml"
+
+# =========================================================
+# 3️⃣ DEPLOY TO TEST
+# =========================================================
+- stage: Deploy_Test
+  displayName: "Deploy to AKS - TEST"
+  dependsOn: Deploy_Dev
+  condition: succeeded()      # only run if dev succeeded
+  jobs:
+  - deployment: TestDeploy
+    displayName: "Deploy to Test AKS"
+    environment: "aks-test"
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureCLI@2
+            displayName: "Login to Azure and set AKS context (TEST)"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials --resource-group $(resourceGroup)-test --name aks-test --overwrite-existing
+
+          - task: Kubernetes@1
+            displayName: "Deploy manifests to TEST"
+      inputs:
+        connectionType: None
+        command: apply
+        useConfigurationFile: true
+        configuration: "$(Pipeline.Workspace)/drop/deployment.yaml"
+
+# =========================================================
+# 4️⃣ DEPLOY TO PROD (with approval)
+# =========================================================
+- stage: Deploy_Prod
+  displayName: "Deploy to AKS - PROD"
+  dependsOn: Deploy_Test
+  condition: succeeded()
+  jobs:
+  - deployment: ProdDeploy
+    displayName: "Deploy to Prod AKS"
+    environment: "aks-prod"     # add approval in this environment in Azure DevOps UI
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureCLI@2
+            displayName: "Login to Azure and set AKS context (PROD)"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials --resource-group $(resourceGroup)-prod --name aks-prod --overwrite-existing
+
+          - task: Kubernetes@1
+            displayName: "Deploy manifests to PROD"
+            inputs:
+              connectionType: None
+              command: apply
+              useConfigurationFile: true
+              configuration: "$(Pipeline.Workspace)/drop/deployment.yaml"
+
+
+
+
+🧠 Explanation
+===============
+
+| Section                    | Purpose                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Build stage**            | Builds Docker image from `Dockerfile`, pushes to Azure Container Registry, and publishes YAML manifests as artifacts |
+| **Deploy_Dev**             | Deploys the app to AKS Dev cluster                                                                                   |
+| **Deploy_Test**            | Deploys to AKS Test after Dev succeeds                                                                               |
+| **Deploy_Prod**            | Deploys to AKS Prod after Test succeeds, with optional approval                                                      |
+| **Environment keyword**    | Connects to Azure DevOps *Environments*, where you can configure manual approvals and gates                          |
+| **az aks get-credentials** | Connects `kubectl` to the respective AKS cluster                                                                     |
+| **Kubernetes@1 task**      | Applies the deployment YAML to the cluster                                                                           |
+
+
+
+🧩 Folder structure suggestion
+===============================
+
+.
+├── Dockerfile
+├── manifests/
+│   ├── deployment.yaml
+│   └── service.yaml
+└── azure-pipelines.yml
+
+
+
+⚙️ Environment Setup (Azure DevOps)
+====================================
+
+Create three Environments in Azure DevOps →
+
+-- aks-dev
+
+-- aks-test
+
+-- aks-prod
+
+Then add your AKS service connection and (for prod) set up approval.
+
+
+
+🚀 Workflow Summary
+====================
+
+-- Developer pushes to main branch
+
+-- Pipeline triggers
+
+-- Build stage → builds Docker image + publishes manifests
+
+-- Deploys sequentially:
+
+   -- Dev → Test → Prod
+
+-- Prod waits for approval (if configured)
+
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+Question : write an Azure devops pipeline with kubernetes deployment across three environments (dev, test, prod) based on user environment input ?
+
+Answer : Perfect — this is an advanced Azure DevOps pipeline scenario 👏.
+
+You want a single pipeline that can deploy to any one environment (dev/test/prod) — based on user input (a parameter).
+
+This is widely used for on-demand deployments and manual release promotion.
+
+
+
+✅ Example: Azure DevOps YAML pipeline with user environment input
+===================================================================
+
+
+# File: azure-pipelines.yml
+---------------------------
+
+
+trigger: none   # Run manually only
+
+
+# =====================================================
+# 👇 Ask for environment input from user at runtime
+# =====================================================
+
+
+parameters:
+  - name: environment
+    displayName: "Select target environment"
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - test
+      - prod
+
+variables:
+  imageName: "myapp"
+  acrName: "myacr123"
+  imageTag: "$(Build.BuildId)"
+  containerRegistry: "$(acrName).azurecr.io"
+  azureServiceConnection: "my-azure-service-connection"  # Azure RM service connection name
+  resourceGroup: "my-rg"
+  kubernetesNamespace: "default"
+
+
+# =====================================================
+# 👇 Pipeline Stages
+# =====================================================
+
+
+
+# -------------------- BUILD --------------------
+
+
+stages:
+- stage: Build
+  displayName: "Build and Push Docker Image"
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    - task: Docker@2
+      displayName: "Build and Push Docker Image"
+      inputs:
+        command: buildAndPush
+        repository: $(imageName)
+        dockerfile: Dockerfile
+        containerRegistry: $(azureServiceConnection)
+        tags: |
+          latest
+          $(imageTag)
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish Kubernetes manifests"
+      inputs:
+        pathToPublish: manifests
+        artifactName: drop
+
+
+# -------------------- DEPLOY --------------------
+
+- stage: Deploy
+  displayName: "Deploy to selected environment"
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployJob
+    displayName: "Deploy to AKS"
+    environment: ${{ parameters.environment }}   # Dynamically choose environment
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - script: |
+              echo "Selected environment: ${{ parameters.environment }}"
+            displayName: "Show environment"
+
+          - task: AzureCLI@2
+            displayName: "Set AKS Context"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroup)-${{ parameters.environment }} \
+                  --name aks-${{ parameters.environment }} \
+                  --overwrite-existing
+
+          - task: Kubernetes@1
+            displayName: "Deploy to AKS ${{ parameters.environment }}"
+            inputs:
+              connectionType: None
+              command: apply
+              useConfigurationFile: true
+              configuration: "$(Pipeline.Workspace)/drop/deployment.yaml"
+
+          - script: |
+              echo "✅ Deployment completed successfully to ${{ parameters.environment }}!"
+            displayName: "Deployment summary"
+
+
+🧠 Explanation
+===============
+
+
+| Section                           | Description                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------------- |
+| **trigger: none**                 | This pipeline runs only when triggered manually                                 |
+| **parameters**                    | Defines the list of environments (user selects one when starting pipeline)      |
+| **${{ parameters.environment }}** | Used everywhere — dynamically selects which AKS to deploy to                    |
+| **Build stage**                   | Builds & pushes Docker image to Azure Container Registry                        |
+| **Deploy stage**                  | Downloads Kubernetes manifests and applies them to selected AKS                 |
+| **AzureCLI@2**                    | Authenticates and sets the correct AKS context dynamically                      |
+| **environment keyword**           | Automatically links to Azure DevOps Environment (for approvals/gates if needed) |
+
+
+
+🧩 Folder structure suggestion
+===============================
+
+.
+├── Dockerfile
+├── manifests/
+│   ├── deployment.yaml
+│   └── service.yaml
+└── azure-pipelines.yml
+
+
+
+🧪 Run example
+===============
+
+When you click “Run pipeline” in Azure DevOps →
+
+You’ll get a dropdown like:
+
+Select target environment:
+  - dev
+  - test
+  - prod
+
+
+✅ You select “test”,
+
+and the pipeline deploys only to the test AKS cluster.
+
+
+🚀 Bonus: Add Approval for Prod
+================================
+
+-- If you want approval before deploying to production, create Azure DevOps Environments:
+
+   -- dev
+
+   -- test
+
+   -- prod
+
+-- Then configure approval in Environments → prod → Approvals and checks.
+
+-- When user selects prod, Azure DevOps automatically pauses for approval.
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+Question : I'd like to template the above Azure DevOps YAML pipeline into a reusable multi-environment pipeline (dev/test/prod) and want to integrate approvals or notifications.
+
+
+Answer : Perfect! Here's how you can template the Azure DevOps YAML pipeline for reusable multi-environment deployments (dev, test, prod) along with:
+
+✅ Environment-based configurations
+🔁 Approvals before deploying to Test and Prod
+📣 Notifications via environment checks or ServiceNow/Teams/Slack (via webhook or extension)
+
+
+🔧 1. Folder Structure Suggestion
+      ----------------------------
+
+/azure-pipelines.yaml
+/templates/
+  build-template.yaml
+  deploy-template.yaml
+/env/
+  dev-values.yaml
+  test-values.yaml
+  prod-values.yaml
+/charts/myapp/
+
+
+📄 2. Main Pipeline (azure-pipelines.yaml)
+      -------------------------------------
+
+trigger:
+  - main
+
+variables:
+  imageName: 'myapp'
+  imageTag: '$(Build.BuildId)'
+  containerRegistry: '<your-acr-name>.azurecr.io'
+  azureSubscription: '<your-service-connection>'
+  azureResourceGroup: '<your-resource-group>'
+  aksCluster: '<your-aks-cluster>'
+  helmChartPath: './charts/myapp'
+  keyVaultName: '<your-keyvault-name>'
+
+stages:
+  - stage: Build
+    displayName: 'Build and Push Docker Image'
+    jobs:
+      - template: templates/build-template.yaml     #[ Tells Azure DevOps to import and run the job(s) defined in another YAML file — in this case, a file named build-template.yaml located 
+                                                       in the templates folder ]
+
+
+        parameters:                                 # [ Provides input variables (parameters) that will be passed into the template. This allows the same template to be reused with                
+          imageName: $(imageName)                       different values (e.g., for different apps or environments) ]
+          imageTag: $(imageTag)
+          containerRegistry: $(containerRegistry)
+
+  - stage: DeployDev
+    displayName: 'Deploy to Dev'
+    dependsOn: Build
+    variables:                  # [ This section defines variables specific to this stage. Variables are used to store reusable values (like environment names, connection strings, or 
+      environment: 'dev'            credentials) ]
+    jobs:
+      - template: templates/deploy-template.yaml
+        parameters:
+          envName: 'dev'
+          envValuesFile: 'env/dev-values.yaml'
+
+  - stage: DeployTest                                  # stage: DeployTest	Defines a pipeline stage for Test deployment
+    displayName: 'Deploy to Test'        
+    dependsOn: DeployDev                               # dependsOn: DeployDev	Ensures this stage runs after Dev deployment
+    variables:                                         # variables:	Defines environment = test scoped to this stage
+      environment: 'test'
+    approval:                                          # approval:	Non-standard usage – Approvals should be handled via environments
+      - environment: test
+    jobs:                                              # jobs:	Uses a shared deployment template with test-specific parameters
+      - template: templates/deploy-template.yaml
+        parameters:
+          envName: 'test'
+          envValuesFile: 'env/test-values.yaml'
+
+  - stage: DeployProd
+    displayName: 'Deploy to Prod'
+    dependsOn: DeployTest
+    variables:
+      environment: 'prod'
+    approval:
+      - environment: prod
+    jobs:
+      - template: templates/deploy-template.yaml
+        parameters:
+          envName: 'prod'
+          envValuesFile: 'env/prod-values.yaml'
+
+
+🧱 3. build-template.yaml
+      --------------------
+
+parameters:
+  imageName: ''
+  imageTag: ''
+  containerRegistry: ''
+
+jobs:
+  - job: BuildAndPush
+    displayName: 'Build and Push Docker Image'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: Docker@2
+        inputs:
+          containerRegistry: '$(containerRegistry)'
+          repository: '${{ parameters.imageName }}'
+          command: 'buildAndPush'
+          Dockerfile: '**/Dockerfile'
+          tags: |
+            ${{ parameters.imageTag }}
+
+
+🧱 4. deploy-template.yaml
+      ---------------------
+
+parameters:
+  envName: ''
+  envValuesFile: ''
+
+jobs:
+  - deployment: Deploy_${{ parameters.envName }}
+    displayName: 'Deploy to ${{ parameters.envName }}'
+    environment: ${{ parameters.envName }}  # For approvals & checks
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - task: AzureKeyVault@2
+              name: FetchSecrets
+              inputs:
+                azureSubscription: '$(azureSubscription)'
+                KeyVaultName: '$(keyVaultName)'
+                SecretsFilter: '*'
+                RunAsPreJob: true
+
+            - task: HelmInstaller@1
+              inputs:
+                helmVersionToInstall: 'latest'
+
+            - task: AzureCLI@2
+              inputs:
+                azureSubscription: '$(azureSubscription)'
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  az aks get-credentials --resource-group $(azureResourceGroup) --name $(aksCluster)
+
+            - task: HelmDeploy@0
+              inputs:
+                connectionType: 'None'
+                namespace: 'default'
+                command: 'upgrade'
+                chartType: 'FilePath'
+                chartPath: '$(helmChartPath)'
+                releaseName: 'myapp-${{ parameters.envName }}'
+                overrideValues: |
+                  image.repository=$(containerRegistry)/$(imageName)
+                  image.tag=$(imageTag)
+                valueFile: '${{ parameters.envValuesFile }}'
+                install: true
+
+
+🛡️ 5. Set Approvals & Checks
+      -----------------------
+
+In Project Settings → Environments → [test/prod], configure:
+
+-- Approvals (users/groups)
+
+-- Checks (service health, security scan gates)
+
+-- Slack/Teams notifications via Webhooks or Extensions
+
+
+
+🛠️ Steps to Configure Approval in Azure DevOps UI
+   -----------------------------------------------
+
+-- Go to Project Settings > Pipelines > Environments.
+
+-- Create or select the test environment.
+
+-- Add a manual approval check under Approvals and checks.
+
+-- Assign required approvers.
+
+
+
+💬 Optional: Notifications via Webhooks
+   -------------------------------------
+
+You can integrate notifications using:
+
+-- Azure DevOps → Service Hooks → Slack/Teams
+
+-- Add a final step in deploy-template.yaml using cURL:
+
+- script: |
+    curl -X POST -H 'Content-type: application/json' --data '{"text":"✅ Deployment to ${{ parameters.envName }} completed!"}' https://hooks.slack.com/services/...
+  displayName: 'Notify Slack'
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Question : Also I'd like to generate the dev-values.yaml, test-values.yaml, and prod-values.yaml examples or the Helm chart folder structure next
+
+Answer : Great! Here's a full set of examples to complete your reusable multi-environment Helm deployment with Azure DevOps YAML pipelines.
+
+
+📁 env/dev-values.yaml
+    -------------------
+
+image:
+  repository: myacr.azurecr.io/myapp
+  tag: latest
+
+replicaCount: 1
+
+env:
+  APP_MODE: "development"
+  LOG_LEVEL: "debug"
+
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+
+
+
+📁 env/test-values.yaml
+   ---------------------
+
+image:
+  repository: myacr.azurecr.io/myapp
+  tag: latest
+
+replicaCount: 2
+
+env:
+  APP_MODE: "testing"
+  LOG_LEVEL: "info"
+
+resources:
+  limits:
+    cpu: "750m"
+    memory: "768Mi"
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+
+
+📁 Helm Chart Folder Structure (charts/myapp/)
+   --------------------------------------------
+
+charts/
+  myapp/
+    Chart.yaml
+    values.yaml
+    templates/
+      deployment.yaml
+      service.yaml
+      _helpers.tpl
+
+
+
+📄 Chart.yaml
+   -----------
+
+apiVersion: v2
+name: myapp
+description: A Helm chart for Kubernetes
+type: application
+version: 0.1.0
+appVersion: "1.0"
+
+
+
+📄 values.yaml (default fallback)
+   -------------------------------
+
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: latest
+  pullPolicy: IfNotPresent
+
+env: {}
+
+resources: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+
+
+📄 templates/deployment.yaml
+   --------------------------
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "myapp.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "myapp.name" . }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: {{ include "myapp.name" . }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: "{{ $value }}"
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+
+
+
+✅ Next Steps Checklist
+   ---------------------
+
+| Step                                            | Status |
+| ----------------------------------------------- | ------ |
+| Configure `azure-pipelines.yaml`                | ✅ Done |
+| Add `templates/` YAML files                     | ✅ Done |
+| Add `env/` override files                       | ✅ Done |
+| Define Helm chart structure                     | ✅ Done |
+| Set up Azure DevOps Environments with approvals | 🔜     |
+| Set up Service Hook for notifications           | 🔜     |
+| Connect AKS & ACR permissions (if not already)  | 🔜     |
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Question : Would you like me to show how to add automatic rollback or health check after Prod deployment (e.g., rollback if kubectl rollout status fails)?
+
+Answer : Perfect 👏 — adding automatic rollback and post-deployment health checks makes your Azure DevOps → AKS pipeline production-grade and interview-ready ✅
+
+Let’s extend our Prod stage from before to include:
+
+-- 🔍 A health check after deployment
+
+-- 🔁 Automatic rollback if the health check fails
+
+
+
+
+🧩 Updated PROD Stage (with Health Check + Rollback)
+-----------------------------------------------------
+
+
+
+- stage: Deploy_Prod
+  displayName: "Deploy to AKS - PROD"
+  dependsOn: Deploy_Test
+  jobs:
+  - deployment: ProdDeploy
+    displayName: "Deploy to Prod AKS"
+    environment: "aks-prod"   # 🔹 UI approval required here
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - bash: |
+              echo "Authenticating to AKS..."
+              az aks get-credentials --resource-group prod-rg --name prod-aks --overwrite-existing
+              
+              echo "Deploying manifests to AKS..."
+              kubectl apply -f $(Pipeline.Workspace)/drop/
+
+              echo "Waiting for deployment to roll out..."
+              kubectl rollout status deployment/myapp-deployment --timeout=120s
+            displayName: "Deploy and Verify Rollout"
+
+          # Health Check step
+          - bash: |
+              echo "Performing health check..."
+              APP_URL="http://myapp.example.com/health"
+              STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" $APP_URL)
+
+              if [ "$STATUS_CODE" != "200" ]; then
+                echo "❌ Health check failed! Expected 200 but got $STATUS_CODE"
+                exit 1
+              else
+                echo "✅ Health check passed successfully!"
+              fi
+            displayName: "Application Health Check"
+
+        on:
+          failure:
+            steps:
+            - bash: |
+                echo "⚠️ Deployment failed! Starting rollback..."
+                az aks get-credentials --resource-group prod-rg --name prod-aks --overwrite-existing
+                kubectl rollout undo deployment/myapp-deployment
+              displayName: "Rollback Deployment"
+
+
+
+🧠 Explanation
+---------------
+
+
+🏗️ Step 1: Deployment
+----------------------
+
+-- kubectl apply -f $(Pipeline.Workspace)/drop/
+-- kubectl rollout status deployment/myapp-deployment --timeout=120s
+
+ - Applies your latest manifests.
+
+ - Waits for the deployment to complete.
+
+ - If rollout fails or times out → the pipeline fails automatically.
+
+
+
+🔍 Step 2: Health Check
+------------------------
+
+-- curl -s -o /dev/null -w "%{http_code}" http://myapp.example.com/health
+
+ - Checks the app’s health endpoint.
+
+ - If it doesn’t return HTTP 200, the step fails (exit 1).
+
+ - This marks the entire deployment as failed.
+
+
+
+🔁 Step 3: Automatic Rollback
+------------------------------
+
+-- kubectl rollout undo deployment/myapp-deployment
+
+ - Triggered by the on: failure: block.
+
+ - If any step fails in deploy: (e.g., rollout or health check), this rollback job executes.
+
+ - Reverts to the previous working ReplicaSet (previous image/tag).
+
+
+🧩 Structure Overview
+----------------------
+
+| Section                 | Purpose                                                             |
+| ----------------------- | ------------------------------------------------------------------- |
+| `deploy:`               | Main deployment logic (apply manifests, rollout wait, health check) |
+| `on: failure:`          | Runs only if any step above fails — used for rollback logic         |
+| `environment: aks-prod` | Enables Azure DevOps **approval + tracking** for prod deployment    |
+
+
+
+💡 How It Works in Real Time
+-----------------------------
+
+-- You approve the Prod deployment in the Azure DevOps UI.
+
+-- The pipeline runs:
+
+   -- Deploys your manifests
+
+   -- Waits for rollout completion
+
+   -- Runs health check
+
+-- If the app is healthy → ✅ success.
+
+-- If rollout fails or health check fails → ❌ pipeline fails → rollback executes automatically.
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Question : Would you like me to show how to integrate this same rollback + health check logic in a Helm-based deployment (instead of kubectl apply)? That’s a very common follow-up pattern.
+
+Answer : Perfect 👍 — let’s now evolve your Azure DevOps → AKS deployment pipeline into a Helm-based deployment with built-in
+-- ✅ health checks and
+-- 🔁 automatic rollback.
+
+
+🧩 Prod Stage: Helm Deployment with Health Check + Rollback
+------------------------------------------------------------
+
+Here’s a production-ready YAML stage using Helm instead of raw kubectl.
+
+
+
+- stage: Deploy_Prod
+  displayName: "Deploy to AKS - PROD (Helm)"
+  dependsOn: Deploy_Test
+  jobs:
+  - deployment: ProdHelmDeploy
+    displayName: "Deploy to Prod AKS using Helm"
+    environment: "aks-prod"   # 🔹 Approval configured in DevOps UI
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - bash: |
+              echo "🔹 Logging into AKS..."
+              az aks get-credentials --resource-group prod-rg --name prod-aks --overwrite-existing
+              
+              echo "🔹 Adding Helm repository..."
+              helm repo add myrepo https://charts.mycompany.com
+              helm repo update
+              
+              echo "🔹 Deploying using Helm upgrade..."
+              helm upgrade --install myapp ./manifests/chart \
+                --namespace prod \
+                --set image.repository=$(containerRegistry)/$(imageName) \
+                --set image.tag=$(imageTag) \
+                --set env=prod \
+                --wait --timeout 120s
+
+              echo "✅ Helm deployment completed!"
+            displayName: "Helm Deploy to AKS"
+
+          # Health Check Step
+          - bash: |
+              echo "🔍 Running health check..."
+              APP_URL="http://myapp.example.com/health"
+              STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" $APP_URL)
+
+              if [ "$STATUS_CODE" != "200" ]; then
+                echo "❌ Health check failed! Expected 200 but got $STATUS_CODE"
+                exit 1
+              else
+                echo "✅ Health check passed!"
+              fi
+            displayName: "Application Health Check"
+
+        on:
+          failure:
+            steps:
+            - bash: |
+                echo "⚠️ Deployment failed! Rolling back Helm release..."
+                az aks get-credentials --resource-group prod-rg --name prod-aks --overwrite-existing
+                
+                echo "Rolling back to previous Helm release version..."
+                helm rollback myapp 1
+              displayName: "Rollback Helm Release"
+
+
+
+🧠 Step-by-Step Explanation
+----------------------------
+
+🏗️ 1. Helm Deployment
+----------------------
+
+
+helm upgrade --install myapp ./manifests/chart \
+  --namespace prod \
+  --set image.repository=$(containerRegistry)/$(imageName) \
+  --set image.tag=$(imageTag) \
+  --set env=prod \
+  --wait --timeout 120s
+
+
+
+What happens here:
+
+upgrade --install: Creates or updates your Helm release.
+
+--set: Dynamically passes image name/tag from pipeline variables.
+
+--wait --timeout 120s: Waits for rollout to complete (pods ready).
+
+Fails automatically if resources don’t stabilize within timeout → triggers rollback.
+
+
+
+
+🔍 2. Health Check
+-------------------
+
+curl -s -o /dev/null -w "%{http_code}" http://myapp.example.com/health
+
+
+-- Checks your app’s /health endpoint.
+
+-- If it’s not 200, the step exits with code 1 → deployment fails.
+
+
+
+🔁 3. Automatic Rollback
+-------------------------
+
+helm rollback myapp 1
+
+
+-- Restores the release to its previous working version.
+
+-- Helm stores revision history automatically — each successful upgrade increments it.
+
+-- You can view it via helm history myapp.
+
+
+
+
+🧩 4. Azure DevOps Approval
+----------------------------
+
+The line environment: "aks-prod" connects this deployment to a DevOps environment.
+
+In the Azure DevOps UI → Environments → aks-prod,
+you configure:
+
+✅ Manual approvals before deploy
+
+🔒 Checks like branch policies or service connections
+
+📜 Audit trail of who approved production deploys
+
+This keeps approvals in UI, while logic remains in YAML.
+
+
+
+
+🧰 Optional — Rollback to a Specific Image Version
+---------------------------------------------------
+
+If you prefer to control rollback using an older image tag instead of Helm’s revision:
+
+
+helm upgrade myapp ./manifests/chart \
+  --set image.tag=$(previousImageTag)
+
+
+You can store previousImageTag as a pipeline variable retrieved from your artifact or previous successful build.
+
+
+
+✅ Key Advantages
+------------------
+
+
+| Feature              | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| **Declarative**      | Uses Helm charts (clean, versioned, parameterized)   |
+| **Safe Deployments** | Waits for rollout and validates health               |
+| **Auto Rollback**    | Recovers automatically on failure                    |
+| **Auditable**        | Integrated with Azure DevOps approvals               |
+| **Reusable**         | Works across Dev, Test, Prod by changing `--set env` |
+
+
+
+
+🔒 Example Multi-Env Helm Deploy Setup
+---------------------------------------
+
+If you’re deploying to multiple environments:
+
+helm upgrade --install myapp ./chart \
+  --namespace $(envName) \
+  --set image.repository=$(containerRegistry)/$(imageName) \
+  --set image.tag=$(imageTag) \
+  --set env=$(envName)
+
+
+And you can drive envName (dev/test/prod) via:
+
+-- Pipeline variable
+
+-- Runtime parameter
+
+-- Or Azure DevOps stage name
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+Question : what is the difference between service connection and service hooks in Azure devops ?
+
+Answer : In Azure DevOps, Service Connections and Service Hooks are both used to integrate with external services, but they serve very different purposes:
+
+
+🔑 Service Connection
+   -------------------
+
+-- Purpose: Used to securely connect Azure DevOps to external services or cloud platforms (e.g., Azure, AWS, Docker Hub, GitHub, Kubernetes).
+
+-- Used In: Primarily in pipelines (CI/CD) to authenticate and deploy resources to external services.
+
+-- Security: Stores credentials, tokens, or certificates securely.
+
+Example Use Cases:
+
+	-- Deploying to Azure using an Azure Resource Manager connection.
+
+	-- Connecting to a container registry like Docker Hub or Azure Container Registry (ACR).
+
+	-- Accessing a Kubernetes cluster during a deployment.
+
+✅ Think of it as: “How Azure DevOps talks TO other services securely for performing actions.”
+
+
+🔔 Service Hooks
+   --------------
+
+-- Purpose: Used to notify or trigger external services when certain events happen in Azure DevOps (e.g., a build is completed, a work item is updated).
+
+-- Used In: Event-based automation and integrations.
+
+Example Use Cases:
+
+	-- Post a message to a Slack or Teams channel when a pull request is created.
+
+	-- Trigger a Jenkins job when a build is completed.
+
+
+	-- Send a webhook to a custom application when a work item is changed.
+
+✅ Think of it as: “How Azure DevOps tells other services that something happened.”
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+🚀 What is a Deployment Group in Azure DevOps?   
+   --------------------------------------------
+
+A Deployment Group in Azure DevOps is a collection of target machines (physical, virtual, on-premises, or cloud-hosted) registered with Azure Pipelines for agent-based deployments.
+
+These machines are typically used in classic release pipelines (not YAML pipelines) to deploy applications directly to specific environments like development, test, staging, or production.
+
+
+🧠 Key Concepts
+
+| Term                  | Explanation                                                                      |
+| --------------------- | -------------------------------------------------------------------------------- |
+| **Deployment Group**  | A logical grouping of machines that you want to deploy to from a pipeline.       |
+| **Deployment Target** | An individual machine (Windows/Linux) that is part of a deployment group.        |
+| **Agent**             | A software installed on each target machine that communicates with Azure DevOps. |
+
+
+
+🏗️ How it Works 
+   -------------
+
+-- You create a Deployment Group in Azure DevOps.
+
+-- You install an agent on each target machine using a script generated by Azure DevOps.
+
+-- The machines are registered to the deployment group.
+
+-- In a classic release pipeline, you can define a deployment job that targets this group.
+
+-- Azure DevOps pushes the artifacts and executes deployment tasks directly on those machines via the agent.
+
+
+
+📦 Use Cases
+   ----------
+
+-- Deploying a web app to on-premises IIS servers.
+
+-- Installing software on internal servers not exposed to the internet.
+
+-- Coordinated deployments across multiple servers (e.g., a microservice backend across 3 VMs).
+
+
+
+🛠️ Example   
+   --------
+
+-- You have 5 VMs running in your company's data center and want to deploy your .NET web app to them.
+
+-- You create a Deployment Group called "Production-WebServers".
+
+-- You install the agent on each VM using the provided registration script.
+
+-- In your release pipeline, you add a job targeting "Production-WebServers".
+
+-- The pipeline deploys your app in parallel or sequence to those 5 VMs.
+
+
+
+✅ Summary
+   --------
+
+-- Deployment Groups are used in classic release pipelines to target on-premises or VM-based deployments.
+
+-- Each machine in a group runs a deployment agent.
+
+-- They're great for server-based applications, especially in hybrid or on-prem environments.
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+✅ How to Set Up a Deployment Group in Azure DevOps (Classic)
+   -----------------------------------------------------------
+
+
+🔧 Step-by-Step Guide
+   -------------------
+
+1. Create a Deployment Group
+
+-- Go to your Azure DevOps project → Pipelines → Deployment Groups
+
+-- Click + Add a deployment group
+
+-- Give it a name (e.g., Prod-WebServers) and optional description.
+
+
+2. Install the Agent on Target Machines
+
+-- After creating the group, Azure DevOps shows a PowerShell or Bash script.
+
+-- Run that script as an admin on each target machine you want to add to the group.
+
+-- This installs the agent and connects the machine to the group securely.
+
+-- You can optionally tag machines (e.g., web, db, backend) for targeted deployments.
+
+
+3. Use in a Release Pipeline
+
+-- Go to Pipelines → Releases → Create a new pipeline.
+
+-- Add an artifact (e.g., from a build pipeline).
+
+-- Add a stage → Add a Deployment group job.
+
+-- Choose the deployment group you created.
+
+-- Add deployment tasks (e.g., IIS Web App Deploy, Copy Files, etc.).
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+⚙️ YAML Equivalent (Using Environments and Self-hosted Agents)
+   ------------------------------------------------------------
+
+For modern YAML pipelines, Deployment Groups are replaced by Environments + self-hosted agents. Here’s how to replicate a similar setup:
+
+
+🧱 Step 1: Set Up a Self-Hosted Agent
+   -----------------------------------
+
+1. On your target server:
+
+-- Go to Azure DevOps → Organization Settings → Agent Pools.
+
+-- Create a pool (e.g., on-prem-pool) and download the agent.
+
+-- Run the installation script on your server.
+
+
+2. Register the agent with the pool and keep it running.
+
+
+
+🌍 Step 2: Define an Environment
+   ------------------------------
+
+-- Go to Pipelines → Environments → New Environment
+
+-- Name it (e.g., production) and associate it with your agent pool
+
+
+
+📝 Step 3: YAML Pipeline Sample
+   -----------------------------
+
+trigger:
+- main
+
+pool:
+  name: 'on-prem-pool'  # Self-hosted agent pool
+
+stages:
+- stage: Deploy
+  displayName: "Deploy to Production"
+  jobs:
+  - deployment: DeployWebApp
+    environment: 'production'  # Azure DevOps environment name
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Pipeline.Workspace)'
+              Contents: '**'
+              TargetFolder: 'C:\inetpub\wwwroot\MyApp'
+
+          - task: IISWebAppDeploymentOnMachineGroup@0
+            inputs:
+              WebSiteName: 'MyApp'
+              Package: '$(System.DefaultWorkingDirectory)/drop/*.zip'
+
+
+This assumes you're deploying to a Windows server with IIS.
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+✅ What Are Approval Gates in Azure Pipelines? 
+   --------------------------------------------
+
+Approval gates are controls in Azure DevOps Environments that pause a pipeline before or after a stage to require manual or automated validation (like approvals, health checks, or security scans) before continuing.
+
+They are part of Environments & Checks, mainly used in multi-stage YAML pipelines or classic releases for governance, security, and compliance.
+
+
+
+🛑 Types of Approval Gates
+   ------------------------
+
+1. Manual Approvals
+
+    -- Require one or more users/groups to approve before proceeding.
+
+    -- Example: Ask a QA lead before deploying to test or prod.
+
+2. Pre-deployment and Post-deployment Approvals
+
+    -- Pre-deployment: Approve before deploying to environment.
+
+    -- Post-deployment: Approve after deployment completes.
+
+3. Automatic Checks
+
+-- ServiceNow change requests
+
+-- Azure Monitor alerts
+
+-- Query Work Items
+
+-- Invoke REST API
+
+-- Azure Function call
+
+-- Business Hours enforcement
+
+-- Deployment delay timers
+
+
+
+🔧 How to Set Up Approval Gates
+   -----------------------------
+
+Step 1: Define an Environment
+
+        -- Go to Pipelines → Environments → + New environment
+
+        -- Name it: test, prod, etc.
+
+Step 2: Configure Approvals and Checks
+
+        -- Click the environment (e.g., prod)
+
+        -- Go to the "Approvals and checks" tab
+
+Add:
+
+-- Pre-deployment approval
+
+   -- Choose users or groups who must approve
+
+   -- Other checks (optional)
+
+
+📄 YAML Example Using Approval Gates
+
+   ----------------------------------
+
+stages:
+- stage: DeployProd
+  displayName: 'Deploy to Prod'
+  jobs:
+  - deployment: DeployToProd
+    environment: prod  # <- This triggers approval if configured
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: echo "Deploying to production"
+
+
+
+
